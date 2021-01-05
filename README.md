@@ -2,7 +2,7 @@
 This repository contains source code for the paper [ContactNets: Learning Discontinuous Contact Dynamics with Smooth, Implicit Representations](https://arxiv.org/abs/2009.11193) by [Samuel Pfrommer\*](http://sam.pfrommer.us/), [Mathew Halm\*](https://www.grasp.upenn.edu/people/mathew-halm), and [Michael Posa](https://www.grasp.upenn.edu/people/michael-posa), published in [CoRL 2020](https://www.robot-learning.org/program/accepted-papers).
 
 ## Attribution notes
-The osqpth and lemkelcp libraries found in lib are not our own and are protected by the Apache Software License and MIT licenses, respectively. The file `contactnets/utils/quaternion.py` contains code extended from the Facebook research `QuaterNet` project, protected under Creative Commons Attribution-NonCommercial license. References to these projects are found below.
+The osqpth and lemkelcp libraries found in lib are not our own and are protected by the Apache Software License and MIT licenses, respectively. fast-nnls is also not our own and has no specified license. The file `contactnets/utils/quaternion.py` contains code extended from the Facebook research `QuaterNet` project, protected under Creative Commons Attribution-NonCommercial license. References to these projects are found below.
 
 * https://github.com/oxfordcontrol/osqpth
 * https://github.com/AndyLamperski/lemkelcp

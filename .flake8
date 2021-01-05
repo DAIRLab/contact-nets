@@ -1,0 +1,11 @@
+[flake8]
+# Ignore multiple statements one line (E701, E704)
+# Ignore too many blank lines (E303)
+# Ignore multiple space (E241, E221, E251)
+# Ignore too may leading # (E266)
+# Ignore invalid escape sequences (W605)
+# Unexpected comment indent (E116)
+ignore = E701, E704, E303, E241, E221, E251, E266, W605, E116
+max-line-length=96
+
+per-file-ignores = experiments/block2d/train_utils.py:E241
