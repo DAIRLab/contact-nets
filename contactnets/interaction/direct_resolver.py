@@ -1,37 +1,32 @@
-import torch
+from collections import defaultdict
+from typing import TYPE_CHECKING, DefaultDict, List
+
 from torch import Tensor
-from torch.nn import Module, ModuleList
+from torch.nn import Module
 
 from contactnets.entity import Entity
-from contactnets.interaction import InteractionResolver, Interaction
+from contactnets.interaction import InteractionResolver
 
-from contactnets.utils import tensor_utils, solver_utils
+if TYPE_CHECKING:
+    from contactnets.system import System
 
-from typing import *
-
-import pdb
 
 class DirectResolver(InteractionResolver):
-    def __init__(self, direct_interactions: ModuleList) -> None:
-        super(DirectResolver, self).__init__([], direct_interactions)
+    """A resolver that sums the predicted impulses of several direct interactions."""
+    def __init__(self, direct_interactions: List[Module]) -> None:
+        super().__init__([], direct_interactions)
 
     def step(self, system: 'System') -> None:
         self.step_impulses(system, self.compute_impulses(system))
 
     def compute_impulses(self, system: 'System') -> List[Tensor]:
-        sp = system.params
-        impulse_map = {}
+        # A dictionary of accumulated impulses for each entity
+        impulse_dict: DefaultDict[Entity, List[Tensor]] = defaultdict(list)
 
-        for direct in self.direct_interactions:
-            impulses = direct.compute_impulses(sp)
-            for entity, impulse in zip(direct.entities, impulses):
-                if not entity in impulse_map:
-                    impulse_map[entity] = impulse
-                else:
-                    impulse_map[entity] = impulse_map[entity] + impulse
+        for interaction in self.direct_interactions:
+            impulses = interaction.compute_impulses(system.params)
+            for entity, impulse in zip(interaction.entities, impulses):
+                impulse_dict[entity].append(impulse)
 
-        impulses = [None] * len(system.entities)
-        for i, entity in enumerate(system.entities):
-            impulses[i] = impulse_map[entity]
-
+        impulses = [sum(impulse_dict[entity]) for entity in system.entities]
         return impulses

@@ -1,8 +1,12 @@
-from contactnets.interaction.interaction import Interaction, DirectInteraction
-from contactnets.interaction.interaction_resolver import InteractionResolver
-from contactnets.interaction.direct_resolver import DirectResolver
+# flake8: noqa
+
+from contactnets.interaction.interaction import DirectInteraction, Interaction  # isort:skip
+from contactnets.interaction.interaction_resolver import InteractionResolver  # isort:skip
+from contactnets.interaction.direct_resolver import DirectResolver  # isort:skip
+
+from contactnets.interaction.ball_bin_2d import BallBin2D, BallGeometry2D
 from contactnets.interaction.direct_learnable import DirectLearnable
-from contactnets.interaction.lcp import LCP
 from contactnets.interaction.elastic_lcp import ElasticLCP
-from contactnets.interaction.polyground2d import PolyGround2D, PolyGeometry2D
-from contactnets.interaction.polyground3d import PolyGround3D, PolyGeometry3D
+from contactnets.interaction.lcp import LCP
+from contactnets.interaction.poly_ground_2d import PolyGeometry2D, PolyGround2D
+from contactnets.interaction.poly_ground_3d import PolyGeometry3D, PolyGround3D

@@ -1,193 +1,118 @@
+import math
+import pdb  # noqa
+from typing import List
+
 import torch
 from torch import Tensor
+import torch.nn as nn
 from torch.nn import Module
 
-from typing import *
-
-from contactnets.utils import utils
-
+from contactnets.entity import Dynamic2D, Ground2D
 from contactnets.interaction import PolyGround2D
-from contactnets.entity import Dynamic2D
-from contactnets.entity import Ground2D
-from contactnets.jacnet import JacNet, JacModule, StateAugment2D, Series, Scale
+from contactnets.jacprop import JacProp, Scale, StateAugment2D
 
-import math
-
-import pdb
 
 class StructuredLearnable(PolyGround2D):
-    phi_net: JacNet
-    tangent_net: JacNet
+    phi_net: Module
+    tangent_net: Module
 
     learn_normal: bool
     learn_tangent: bool
 
-    def __init__(self, poly: Dynamic2D, ground: Ground2D,
-                       vertices: Tensor, mu: Tensor, H: int,
-                       learn_normal: bool, learn_tangent: bool) -> None:
-        super(StructuredLearnable, self).__init__(poly, ground, vertices, mu)
-        
+    def __init__(self, poly: Dynamic2D, ground: Ground2D, vertices: Tensor, mu: Tensor,
+                 net_type: str, H: int, learn_normal: bool, learn_tangent: bool) -> None:
+        super().__init__(poly, ground, vertices, mu)
+
         self.learn_normal = learn_normal
         self.learn_tangent = learn_tangent
 
         self.H = H
-        if learn_normal and learn_tangent:
-            #self.init_head_net()
-            self.init_phi_net_deep()
-            self.init_tangent_net_deep()
-        elif learn_normal:
-            self.init_phi_net_deep()
-        elif learn_tangent:
-            self.init_tangent_net_deep()
 
-    def init_phi_net(self) -> None:
-        state_aug = StateAugment2D(torch.tensor([0, math.pi/2]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
+        if net_type == 'poly':
+            self.init_polytope_phi_net()
+            self.init_polytope_tangent_net()
+        elif net_type == 'deep':
+            self.init_deep_phi_net()
+            self.init_deep_tangent_net()
+        else:
+            raise Exception('Network type not recognized')
 
-        linear = torch.nn.Linear(4, self.k(), bias=False)
-        linear.weight = torch.nn.Parameter(torch.tensor([[0, 1, 1, -1],
-                                                         [0, 1, 1, 1],
-                                                         [0, 1, -1, 1],
-                                                         [0, 1, -1, -1]]).double(),
-                                                         requires_grad=True)
+        jacprop = JacProp()
+        jacprop.jacobian_enable(self.phi_net)
+        jacprop.jacobian_enable(self.tangent_net)
+
+    def corner_tensor(self) -> Tensor:
+        return torch.tensor([[0, 1, 1, -1],
+                             [0, 1, 1, 1],
+                             [0, 1, -1, 1],
+                             [0, 1, -1, -1]]).double()
+
+    def init_polytope_phi_net(self) -> None:
+        state_aug = StateAugment2D(torch.tensor([0, math.pi / 2]))
+
+        linear = nn.Linear(4, self.contact_n(), bias=False)
+        linear.weight = nn.Parameter(self.corner_tensor(), requires_grad=True)
         with torch.no_grad():
             linear.weight.add_(torch.randn(linear.weight.size()) * 0.3)
 
-        linear_module = JacModule.from_linear(linear)
+        self.phi_net = nn.Sequential(state_aug, linear)
 
-        modules = torch.nn.ModuleList([state_aug_module, linear_module]) 
+    def init_polytope_tangent_net(self) -> None:
+        state_aug = StateAugment2D(torch.tensor([math.pi / 2, math.pi]))
 
-        self.phi_net = JacNet(JacModule.from_jac_enabled(Series(modules)))
-
-    def init_phi_net_deep(self) -> None:
-        H = self.H
-        state_aug = StateAugment2D(torch.tensor([0, math.pi/2]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
-
-        module1 = JacModule.from_linear(torch.nn.Linear(4, H))
-        module2 = JacModule.from_tanh(torch.nn.Tanh())
-        module3 = JacModule.from_linear(torch.nn.Linear(H, H))
-        module4 = JacModule.from_tanh(torch.nn.Tanh())
-        module5 = JacModule.from_linear(torch.nn.Linear(H, self.k(), bias=True))
-
-        scale = JacModule.from_jac_enabled(Scale(torch.tensor(5.0)))
-
-        # modules = torch.nn.ModuleList([module1, module2, module3, module4, module5]) 
-        modules = torch.nn.ModuleList([state_aug_module, module1, module2, module3, module4, module5, scale]) 
-
-        self.phi_net = JacNet(JacModule.from_jac_enabled(Series(modules)))
-
-    def init_phi_net_linear(self) -> None:
-        state_aug = StateAugment2D(torch.tensor([0, math.pi/2]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
-
-        module1 = JacModule.from_linear(torch.nn.Linear(4, self.k(), bias=True))
-
-        # modules = torch.nn.ModuleList([module1, module2, module3, module4, module5]) 
-        modules = torch.nn.ModuleList([state_aug_module, module1]) 
-
-        self.phi_net = JacNet(JacModule.from_jac_enabled(Series(modules)))
-
-    def init_tangent_net_deep(self) -> None:
-        H = self.H
-        state_aug = StateAugment2D(torch.tensor([0, math.pi/2]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
-
-        module1 = JacModule.from_linear(torch.nn.Linear(4, H))
-        module2 = JacModule.from_tanh(torch.nn.Tanh())
-        module3 = JacModule.from_linear(torch.nn.Linear(H, H))
-        module4 = JacModule.from_tanh(torch.nn.Tanh())
-        module5 = JacModule.from_linear(torch.nn.Linear(H, self.k(), bias=True))
-
-        # modules = torch.nn.ModuleList([module1, module2, module3, module4, module5]) 
-        modules = torch.nn.ModuleList([state_aug_module, module1, module2, module3, module4, module5]) 
-
-        self.tangent_net = JacNet(JacModule.from_jac_enabled(Series(modules)))
-
-    def init_tangent_net_linear(self) -> None:
-        state_aug = StateAugment2D(torch.tensor([0, math.pi/2]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
-
-        module1 = JacModule.from_linear(torch.nn.Linear(4, self.k(), bias=True))
-
-        # modules = torch.nn.ModuleList([module1, module2, module3, module4, module5]) 
-        modules = torch.nn.ModuleList([state_aug_module, module1]) 
-
-        self.tangent_net = JacNet(JacModule.from_jac_enabled(Series(modules)))
-
-    def init_tangent_net(self) -> None:
-        state_aug = StateAugment2D(torch.tensor([math.pi/2, math.pi]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
-
-        linear = torch.nn.Linear(4, self.k(), bias=False)
-        linear.weight = torch.nn.Parameter(torch.tensor([[1, 0, 1, -1],
-                                                         [1, 0, 1, 1],
-                                                         [1, 0, -1, 1],
-                                                         [1, 0, -1, -1]]).double(),
-                                                         requires_grad=True)
+        linear = nn.Linear(4, self.contact_n(), bias=False)
+        linear.weight = nn.Parameter(self.corner_tensor(), requires_grad=True)
 
         with torch.no_grad():
             linear.weight.add_(torch.randn(linear.weight.size()) * 0.3)
 
-        linear_module = JacModule.from_linear(linear)
+        self.tangent_net = nn.Sequential(state_aug, linear)
 
-        modules = torch.nn.ModuleList([state_aug_module, linear_module]) 
+    def init_deep_phi_net(self) -> None:
+        self.phi_net = nn.Sequential(
+            StateAugment2D(torch.tensor([0, math.pi / 2])),
+            nn.Linear(4, self.H),
+            nn.Tanh(),
+            nn.Linear(self.H, self.H),
+            nn.Tanh(),
+            nn.Linear(self.H, self.contact_n(), bias=True),
+            Scale(torch.tensor(5.0))
+        )
 
-        self.tangent_net = JacNet(JacModule.from_jac_enabled(Series(modules)))
+    def init_deep_tangent_net(self) -> None:
+        self.tangent_net = nn.Sequential(
+            StateAugment2D(torch.tensor([math.pi / 2, math.pi])),
+            nn.Linear(4, self.H),
+            nn.Tanh(),
+            nn.Linear(self.H, self.H),
+            nn.Tanh(),
+            nn.Linear(self.H, self.contact_n(), bias=True),
+        )
 
-    def init_head_net(self) -> None:
-        H = self.H
-        state_aug = StateAugment2D(torch.tensor([0, math.pi/2]))
-        state_aug_module = JacModule.from_jac_enabled(state_aug)
+    def compute_phi(self, configurations: List[Tensor]) -> Tensor:
+        if not self.learn_normal: return super().compute_phi(configurations)
 
-        module1 = JacModule.from_linear(torch.nn.Linear(4, H))
-        module2 = JacModule.from_tanh(torch.nn.Tanh())
-        module3 = JacModule.from_linear(torch.nn.Linear(H, H))
-        module4 = JacModule.from_tanh(torch.nn.Tanh())
-        phi_head = JacModule.from_linear(torch.nn.Linear(H, self.k(), bias=True))
-        tangent_head = JacModule.from_linear(torch.nn.Linear(H, self.k(), bias=True))
-        
-        scale = JacModule.from_jac_enabled(Scale(torch.tensor(5.0)))
-        #phi_head.operation.weight = torch.nn.Parameter(phi_head.operation.weight * 10.0)
-        # phi_head.operation.bias = torch.nn.Parameter(phi_head.operation.bias + 2.0)
+        poly_configuration = configurations[0]
 
-        phi_modules = torch.nn.ModuleList([state_aug_module, module1, module2, module3, module4, phi_head, scale]) 
+        return self.phi_net(poly_configuration.squeeze(-1)).unsqueeze(-1)
 
-        self.phi_net = JacNet(JacModule.from_jac_enabled(Series(phi_modules)))
+    def compute_Jn(self, configurations: List[Tensor]) -> Tensor:
+        if not self.learn_normal: return super().compute_Jn(configurations)
 
-        tangent_modules = torch.nn.ModuleList([state_aug_module, module1, module2, module3, module4, tangent_head]) 
+        poly_configuration = configurations[0]
 
-        self.tangent_net = JacNet(JacModule.from_jac_enabled(Series(tangent_modules)))
+        return JacProp.jacobian(self.phi_net, poly_configuration.squeeze(-1))
 
-    def compute_phi_history(self, i=-1) -> Tensor:
-        if not self.learn_normal:
-            return super(StructuredLearnable, self).compute_phi_history(i=i)
+    def compute_phi_t(self, configurations: List[Tensor]) -> Tensor:
+        if not self.learn_tangent: return super().compute_phi_t(configurations)
 
-        configuration = self.poly.get_configuration(i=i)
-        
-        return self.phi_net(configuration.transpose(1,2)).transpose(1,2) 
+        poly_configuration = configurations[0]
 
-    def compute_Jn_history(self, i=-1) -> Tensor:
-        if not self.learn_normal:
-            return super(StructuredLearnable, self).compute_Jn_history(i=i)
+        return self.tangent_net(poly_configuration.squeeze(-1)).unsqueeze(-1)
 
-        configuration = self.poly.get_configuration(i=i)
-        
-        return self.phi_net.jacobian(configuration.transpose(1,2)).transpose(1,2) 
+    def compute_Jt_tilde(self, configurations: List[Tensor]) -> Tensor:
+        if not self.learn_tangent: return super().compute_Jt_tilde(configurations)
 
-    def compute_phi_t_history(self, i=-1) -> Tensor:
-        if not self.learn_tangent:
-            return super(StructuredLearnable, self).compute_phi_t_history(i=i)
+        poly_configuration = configurations[0]
 
-        configuration = self.poly.get_configuration(i=i)
-        
-        return self.tangent_net(configuration.transpose(1,2)).transpose(1,2) 
-
-
-    def compute_Jt_tilde_history(self, i=-1) -> Tensor:
-        if not self.learn_tangent:
-            return super(StructuredLearnable, self).compute_Jt_tilde_history(i=i)
-
-        configuration = self.poly.get_configuration(i=i)
-        
-        return self.tangent_net.jacobian(configuration.transpose(1,2)).transpose(1,2) 
+        return JacProp.jacobian(self.tangent_net, poly_configuration.squeeze(-1))

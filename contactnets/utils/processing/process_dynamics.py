@@ -1,38 +1,34 @@
+# flake8: noqa
+# TODO: clean up
 
 import csv
-import os
-import pdb
-import sys
-import time
 import glob
-
-import numpy as np
 import math
-
-from scipy import signal
-from scipy.spatial.transform import Rotation, RotationSpline
-from scipy.interpolate import CubicSpline
-
-import matplotlib.pyplot as plt
-
-import torch
-
+import os
+import pdb  # noqa
 import pickle
-
-from contactnets.utils import utils, dirs, file_utils, quaternion
-from contactnets.experiments.block3d.sim import Block3DParams
-
 import random
-from random import randrange, uniform
+from random import randrange
+import time
+from typing import List, Tuple
 
 import click
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import signal
+from scipy.interpolate import CubicSpline
+from scipy.spatial.transform import Rotation, RotationSpline
+import torch
 
-import pdb
+from contactnets.experiments.block3d.sim import Block3DParams
+from contactnets.utils import dirs, file_utils
 
 BLOCK_HALF_WIDTH = 0.0524
 
-def do_process(inbag: str, downsamp: int, center: bool, perturb: bool, zrot: bool, pullback: bool,
-               toss_comp: int, zshift: float, length_scale: float, use_python3: bool, plot: bool):
+
+def do_process(inbag: str, downsamp: int, center: bool, perturb: bool, zrot: bool,
+               pullback: bool, toss_comp: int, zshift: float, length_scale: float,
+               use_python3: bool, plot: bool) -> Tuple[int, int]:
     DOWNSAMP = downsamp
 
     # static parameters for toss detection
@@ -44,7 +40,7 @@ def do_process(inbag: str, downsamp: int, center: bool, perturb: bool, zrot: boo
     G = -9.81
     FALL_TOL = 3.
     FALL_TOL_MEAN = 1.
-    FALL_ACC_MIN = G - FALL_TOL
+    # FALL_ACC_MIN = G - FALL_TOL
     FALL_ACC_MAX = G + FALL_TOL
 
     # far edge of board in board coordinates (y-axis)
@@ -356,7 +352,7 @@ def do_process(inbag: str, downsamp: int, center: bool, perturb: bool, zrot: boo
     CLEARANCE_MIN_MAX = 0.007
     CLEARANCE_AIRFORCE = 0.01
     AIRFORCE_MAX = 9.81/2
-    throw_out = []
+    throw_out: List[int] = []
     contact_forces = ddp_t.T - np.array([0,0,G])
     contact_forces = np.sum(np.abs(contact_forces)**2,axis=-1)**(1./2)
     configs = data[:,1:8]
@@ -389,11 +385,11 @@ def do_process(inbag: str, downsamp: int, center: bool, perturb: bool, zrot: boo
         pos_init = np.tile(pos_init, (1, p_t.shape[1]))
 
         p_t -= pos_init
-        
+
         if pullback:
-            pullback = np.zeros_like(p_t)
-            pullback[1, :] = -0.5
-            p_t += pullback
+            pullback_mat = np.zeros_like(p_t)
+            pullback_mat[1, :] = -0.5
+            p_t += pullback_mat
 
 
     if zrot:
@@ -432,7 +428,7 @@ def do_process(inbag: str, downsamp: int, center: bool, perturb: bool, zrot: boo
 
                 # run = run - pos_init
 
-                # # Pull back run center 
+                # # Pull back run center
                 # pullback = np.zeros_like(run)
                 # pullback[:, 1] = -0.5
                 # run = run + pullback
@@ -583,7 +579,7 @@ def write_experiment(length_scale: float, run_n: int, downsample: int) -> None:
         vertices = length_scale * BLOCK_HALF_WIDTH * \
                     torch.tensor([[-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0],
                                   [-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0],
-                                  [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0]])
+                                  [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0]]).t()
 
         bp = Block3DParams(vertices = vertices,
                            mass = torch.tensor(0.37),
@@ -621,7 +617,7 @@ def cli():
 def process_cmd(bagnum: int, downsample: int, center: bool, perturb: bool, zrot: bool, pullback: bool, use_python3: bool,
             toss_comp: int, zshift: float, length_scale: float) -> None:
 
-    bag = dirs.data_path('tosses_processed', str(bagnum), 'odom.bag')
+    bag = dirs.data_path('tosses_odom', str(bagnum), 'odom.bag')
     torch.set_default_tensor_type(torch.DoubleTensor)
     setup_directories()
     write_experiment(length_scale, 5, downsample)
@@ -637,12 +633,12 @@ def do_process_multi(num: int, downsample: int, center: bool, perturb: bool, zro
     accept_n = 0
     reject_n = 0
     while accept_n < num:
-        toss_groups = os.listdir(dirs.data_path('tosses_processed'))
+        toss_groups = os.listdir(dirs.data_path('tosses_odom'))
         toss_groups = [fold for fold in toss_groups if 'DS' not in fold]
         random.shuffle(toss_groups)
 
         for toss_group in toss_groups:
-            bag = dirs.data_path('tosses_processed', toss_group, 'odom.bag')
+            bag = dirs.data_path('tosses_odom', toss_group, 'odom.bag')
             (A,R) = do_process(bag, downsample, center, perturb, zrot, pullback, toss_comp, zshift, length_scale, use_python3, plot)
             accept_n += A
             reject_n += R

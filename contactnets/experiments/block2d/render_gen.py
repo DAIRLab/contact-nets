@@ -1,38 +1,33 @@
-import sys
-sys.path.append('..')
-
-import pickle
-
-import torch
-
-from argparse import ArgumentParser
-
-from contactnets.system import System
-from contactnets.utils import utils, file_utils, dirs, system_io
-from contactnets.vis import Visualizer2D
-
-from contactnets.interaction import DirectResolver, DirectLearnable, PolyGeometry2D
-from contactnets.experiments.block2d import sim, Block2DParams, StructuredLearnable, DeepLearnable 
-from contactnets.experiments.block2d.train import Block2DTraining, Block2DTrainingE2E
+import pdb  # noqa
+from typing import Union, cast
 
 import click
+import torch
 
-import pdb
+from contactnets.entity import Ground2D
+from contactnets.experiments.block2d import (Block2DParams, DeepLearnable, StructuredLearnable,
+                                             sim)
+from contactnets.experiments.block2d.train import Block2DTraining, Block2DTrainingE2E
+from contactnets.interaction import DirectResolver, PolyGeometry2D
+from contactnets.utils import dirs, file_utils, system_io
+from contactnets.vis import Visualizer2D
+
 
 @click.command()
 @click.option('--num', default=0, help='Which run to visualize')
 @click.option('--compare/--no-compare', default=False,
               help='Whether to render the compared model as well')
 @click.option('--save/--no-save', default=False, help='Save into out/renders directory')
-def main(num, compare, save):
+def main(num: int, compare: bool, save: bool) -> None:
     torch.set_default_tensor_type(torch.DoubleTensor)
-    
+
     if compare:
-        training = file_utils.load_params(None, 'training')
+        training = file_utils.load_params(torch.device('cpu'), 'training')
         structured = isinstance(training, Block2DTraining)
-        bp: Block2DParams = file_utils.load_params(training.device, 'experiment')
+        e2e        = isinstance(training, Block2DTrainingE2E)
+        bp: Block2DParams = file_utils.load_params(torch.device(training.device), 'experiment')
     else:
-        bp: Block2DParams = file_utils.load_params('cpu', 'experiment')
+        bp = file_utils.load_params(torch.device('cpu'), 'experiment')
 
     x = torch.load(dirs.out_path('data', 'all', str(num) + '.pt'))
 
@@ -42,23 +37,27 @@ def main(num, compare, save):
 
     if compare:
         if structured:
-            interaction = StructuredLearnable(system.entities[0], system.entities[1],
-                bp.vertices, bp.mu, training.H, training.learn_normal, training.learn_tangent)
+            interaction: Union[StructuredLearnable, DeepLearnable] = \
+                StructuredLearnable(system.entities[0], system.entities[1], bp.vertices,
+                                    bp.mu, training.net_type, training.H,
+                                    training.learn_normal, training.learn_tangent)
             system.resolver.interactions = torch.nn.ModuleList([interaction])
+        elif e2e:
+            interaction = DeepLearnable(list(system.entities))
+            system.resolver = DirectResolver([interaction])
         else:
-            interaction = DeepLearnable(system.entities)
-            system.resolver = DirectResolver(torch.nn.ModuleList([interaction]))
+            raise Exception("Don't recognize training file type")
 
         system.load_state_dict(torch.load(dirs.out_path('trainer.pt')))
         system.eval()
-        
+
         system.restart_sim()
 
         sim_results.append(system.get_sim_result())
 
-    lcp = system.resolver
-    
-    vis = Visualizer2D(sim_results, [utils.create_geometry2d(bp.vertices)], system.params)
+    vis = Visualizer2D(sim_results, [PolyGeometry2D(bp.vertices)],
+                       [cast(Ground2D, system.entities[1])], system.params)
     vis.render(save_video=save)
+
 
 if __name__ == "__main__": main()

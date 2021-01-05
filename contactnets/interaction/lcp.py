@@ -1,22 +1,23 @@
+import pdb  # noqa
+from typing import TYPE_CHECKING, List, Tuple
+
 import torch
 from torch import Tensor
-from torch.nn import Module, ModuleList
+from torch.nn import Module
 
-from contactnets.entity import Entity
-from contactnets.interaction import InteractionResolver, Interaction
+from contactnets.interaction import InteractionResolver
+from contactnets.utils import solver_utils, tensor_utils
 
-from contactnets.utils import tensor_utils, solver_utils
+if TYPE_CHECKING:
+    from contactnets.system import System
 
-from typing import *
-
-import pdb
 
 class LCP(InteractionResolver):
+    """A linear complimentarity program resolver for single interaction."""
     G_bases: Tensor
 
-    def __init__(self, interactions: ModuleList,
-                       G_bases: Tensor) -> None:
-        super(LCP, self).__init__(interactions, [])
+    def __init__(self, interactions: List[Module], G_bases: Tensor) -> None:
+        super().__init__(interactions, [])
         assert(len(interactions) == 1)
 
         self.G_bases = G_bases
@@ -33,9 +34,7 @@ class LCP(InteractionResolver):
         Jt_tilde = interaction.compute_Jt_tilde_history().bmm(gamma)
         J = torch.cat((Jn, Jt_tilde), dim=1)
 
-        impulses = self.compute_corner_impulses(sp)
-
-        net_impulses = J.transpose(1, 2).bmm(impulses)
+        net_impulses = J.transpose(1, 2).bmm(self.compute_corner_impulses(sp))
 
         impulses = []
 
@@ -51,13 +50,13 @@ class LCP(InteractionResolver):
         bases_n = self.G_bases.shape[0]
 
         batch_n = interaction.batch_n()
-        k = interaction.k()
+        k = interaction.contact_n()
 
         lcp_mat, lcp_vec = self.compute_lcp(sp, i=i)
 
-        I = torch.eye(lcp_mat.shape[1])
-        I = I.unsqueeze(0).repeat(batch_n, 1, 1)
-        lcp_mat = lcp_mat + I * 0.001
+        Id = torch.eye(lcp_mat.shape[1])
+        Id = Id.unsqueeze(0).repeat(batch_n, 1, 1)
+        lcp_mat = lcp_mat + Id * 0.001
 
         for mat in lcp_mat:
             real_eigs = torch.eig(mat).eigenvalues[:, 0]
@@ -72,12 +71,12 @@ class LCP(InteractionResolver):
 
         return torch.cat((lambda_n, lambda_t), dim=1)
 
-    def compute_lcp(self, sp, i=-1):
+    def compute_lcp(self, sp, i=-1) -> Tuple[Tensor, Tensor]:
         interaction = self.interactions[0]
         bases_n = self.G_bases.shape[0]
 
         batch_n = interaction.batch_n()
-        k = interaction.k()
+        k = interaction.contact_n()
 
         gamma = interaction.compute_gamma_history(i=i)
         M_i = interaction.compute_M_i_history(i=i)
@@ -108,24 +107,25 @@ class LCP(InteractionResolver):
         LCP_mat = torch.cat((r1, r2, r3), dim=1)
 
         LCP_vec = torch.cat((Jn.bmm(f) + phi / sp.dt, Jt.bmm(f),
-            torch.zeros((batch_n, k, 1))), dim=1)
+                             torch.zeros((batch_n, k, 1))), dim=1)
 
         return LCP_mat, LCP_vec
 
-    def compute_Jt(self, i=-1):
+    def compute_Jt(self, i=-1) -> Tensor:
         interaction = self.interactions[0]
 
         Jt_tilde = interaction.compute_Jt_tilde_history(i=i)
 
         GT = self.compute_G()
 
-        Jt = GT.transpose(1,2).bmm(Jt_tilde)
+        Jt = GT.transpose(1, 2).bmm(Jt_tilde)
 
         return Jt
 
     def compute_G(self) -> Tensor:
         interaction = self.interactions[0]
+        contact_n = interaction.contact_n()
         bases = self.G_bases
-        G = tensor_utils.block_diag(bases.t().unsqueeze(0).repeat(interaction.k(), 1, 1))
+        G = tensor_utils.block_diag(bases.t().unsqueeze(0).repeat(contact_n, 1, 1))
         G = G.unsqueeze(0).repeat(interaction.batch_n(), 1, 1)
         return G

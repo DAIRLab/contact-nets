@@ -1,10 +1,9 @@
-import rosbag
-import subprocess, yaml
-import numpy as np
-import pdb
+import pdb  # noqa
 import sys
 
-from scipy import interpolate
+import numpy as np
+import rosbag
+import yaml
 
 # static parameters
 CUBE_TOPIC_STRING = '/tagslam/odom/body_cube'
@@ -21,43 +20,45 @@ outcsv = sys.argv[2]
 bag = rosbag.Bag(inbag)
 
 # get summary info from rosbag as a dictionary
-info_dict = yaml.load(bag._get_yaml_info())
+info = yaml.load(bag._get_yaml_info())
 
 # extract metadata from cube and board topics
-cube_topic = [topic for topic in info_dict['topics'] if topic['topic'] == CUBE_TOPIC_STRING][0]
-board_topic = [topic for topic in info_dict['topics'] if topic['topic'] == BOARD_TOPIC_STRING][0]
+cube_topic = [topic for topic in info['topics'] if topic['topic'] == CUBE_TOPIC_STRING][0]
+board_topic = [topic for topic in info['topics'] if topic['topic'] == BOARD_TOPIC_STRING][0]
 
 # ensure there are an equal number of cube and board odom messages
 num_msg = cube_topic['messages']
 if not num_msg == board_topic['messages']:
     raise Exception('Missing odom messages for board and/or cube!')
 
-# extract cube pose data
-t_ros = np.zeros(num_msg)
-cube_ros = np.zeros((7,num_msg))
-i = 0
-for i, tmt in enumerate(bag.read_messages(topics=[CUBE_TOPIC_STRING])):
-    topic, msg, t = tmt
-    tstamp = msg.header.stamp
-    t_ros[i] = tstamp.secs + tstamp.nsecs*1e-9
-    cube_pose = msg.pose.pose
-    cube_pos = np.asarray([cube_pose.position.x, cube_pose.position.y, cube_pose.position.z])
-    cube_quat = np.asarray([cube_pose.orientation.x, cube_pose.orientation.y, cube_pose.orientation.z, cube_pose.orientation.w])
-    cube_ros[:4,i] = cube_quat
-    cube_ros[4:7,i] = cube_pos
-    i = i + 1
 
-# extract board pose data
-board_ros = np.zeros((7,num_msg))
-i = 0
-for i, tmt in enumerate(bag.read_messages(topics=[BOARD_TOPIC_STRING])):
-    topic, msg, t = tmt
-    board_pose = msg.pose.pose
-    board_pos = np.asarray([board_pose.position.x, board_pose.position.y, board_pose.position.z])
-    board_quat = np.asarray([board_pose.orientation.x, board_pose.orientation.y, board_pose.orientation.z, board_pose.orientation.w])
-    board_ros[:4,i] = board_quat
-    board_ros[4:7,i] = board_pos
-    i = i + 1
+def extract_times(messages):
+    t_ros = np.zeros(len(messages))
+    for i, data in enumerate(list(messages)):
+        (_, msg, _) = data
+        tstamp = msg.header.stamp
+        t_ros[i] = tstamp.secs + tstamp.nsecs * 1e-9
+
+    return t_ros
+
+
+def extract_poses(messages):
+    poses = np.zeros((7, len(messages)))
+    for i, data in enumerate(messages):
+        (_, msg, _) = data
+        pose = msg.pose.pose
+        pose_pos = np.asarray([pose.position.x, pose.position.y, pose.position.z])
+        pose_quat = np.asarray([pose.orientation.x, pose.orientation.y,
+                                pose.orientation.z, pose.orientation.w])
+        poses[:4, i] = pose_quat
+        poses[4:7, i] = pose_pos
+
+    return poses
+
+
+t_ros = extract_times(list(bag.read_messages(topics=[CUBE_TOPIC_STRING])))
+cube_ros = extract_poses(list(bag.read_messages(topics=[CUBE_TOPIC_STRING])))
+board_ros = extract_poses(list(bag.read_messages(topics=[BOARD_TOPIC_STRING])))
 
 bag.close()
 

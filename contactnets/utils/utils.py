@@ -1,169 +1,344 @@
-import torch
-
-import pickle
-import re
 import math
 import os
+import pdb  # noqa
+from typing import Any, Dict, List
+
 import psutil
+import torch
+from torch import Tensor
+import torch.nn as nn
 
-import pdb
-
-import contactnets.interaction
-import contactnets.utils.quaternion as quat
 from contactnets.utils import tensor_utils
+import contactnets.utils.quaternion as quat
 
-def elements_identical(l):
-    if len(l) == 0:
+
+def elements_identical(li: List) -> bool:
+    """Return true iff all elements of li are identical."""
+    if len(li) == 0:
         return True
 
-    return l.count(l[0]) == len(l)
+    return li.count(li[0]) == len(li)
 
-def filter_none(l):
-    # Removes None elements from list
-    return [i for i in l if (i is not None)]
 
-def list_dict_swap(v):
-    # Convert list of dicts to dict of lists
+def filter_none(li: List) -> List:
+    """Remove all None elements from li."""
+    return [i for i in li if (i is not None)]
+
+
+def list_dict_swap(v: List[Dict[Any, Any]]) -> Dict[Any, List[Any]]:
+    """Convert list of dicts to a dict of lists.
+
+    >>> list_dict_swap([{'a': 1, 'b': 2}, {'a': 3, 'b': 4}]) == {'a': [1, 3], 'b': [2, 4]}
+    """
     return {k: [dic[k] for dic in v] for k in v[0]}
 
-def transpose_lists(l):
-    # Transpose list of lists
-    return list(map(list, zip(*l)))
 
-def process_memory():
-    # return process memory in megabytes
+def transpose_lists(li: List[List[Any]]) -> List[List[Any]]:
+    """Transpose list of lists as if it were a matrix."""
+    return list(map(list, zip(*li)))
+
+
+def process_memory() -> float:
+    """Return process memory usage in megabytes."""
     process = psutil.Process(os.getpid())
     return process.memory_info().rss * 1e-6
 
-def compute_quadratic_loss(A, b, c, x):
+
+def compute_quadratic_loss(A: Tensor, b: Tensor, c: Tensor, x: Tensor) -> Tensor:
+    """Compute a quadratic with specified coefficients and variable."""
     return x.transpose(1, 2).bmm(A).bmm(x) + b.bmm(x) + c
 
-def generate_normalizing_layer(data):
+
+def generate_normalizing_layer(data: Tensor) -> nn.Linear:
+    """Create a linear layer which normalizes the input data Tensor.
+
+    Args:
+        data: batch_n x n
+
+    Returns:
+        A linear layer which normalizes each element [0, ..., n-1] along the batch_n dimension.
+        Namely, layer(data).mean(dim=0) will be all zeros, and layer(data).std(dim=0) will be
+        all ones. The only corner case is if all elements along a certain index are zero; i.e.
+        data[i, j] = 0 for all i. Then layer(data) will have zero mean and standard deviation
+        in that index. Note that layer(data).shape = data.shape.
+    """
     means = data.mean(dim=0)
     stds = data.std(dim=0)
 
     stds_recip = 1 / stds
     stds_recip[stds_recip == float('Inf')] = 0
 
-    layer = torch.nn.Linear(data.shape[1], data.shape[1], bias=True)
-    layer.weight = torch.nn.Parameter(torch.diag(stds_recip), requires_grad=False)
-    layer.bias = torch.nn.Parameter(-means * stds_recip, requires_grad=False)
+    layer = nn.Linear(data.shape[1], data.shape[1], bias=True)
+    layer.weight = nn.Parameter(torch.diag(stds_recip), requires_grad=False)
+    layer.bias = nn.Parameter(-means * stds_recip, requires_grad=False)
     return layer
 
-def create_geometry2d(vertices):
-    # vertices are 2 x n tensor
-    angles = -torch.atan2(vertices[0, :], vertices[1, :]) + math.pi / 2
-    return contactnets.interaction.PolyGeometry2D(vertices, angles)
 
-def rot2d(theta):
-    batch_n = theta.shape[0]
-    # Takes in batch theta vector and makes batches of rotation matrices
-    c, s = torch.cos(theta), torch.sin(theta)
-    c = c.unsqueeze(1).unsqueeze(0)
-    s = s.unsqueeze(1).unsqueeze(0)
-    r1 = torch.cat((c, -s), dim=2).reshape(batch_n, 1, 2)
-    r2 = torch.cat((s, c), dim=2).reshape(batch_n, 1, 2)
+def rot2d(theta: Tensor) -> Tensor:
+    """Generate a batch of 2d rotation matrices from a batch of rotation angles.
+
+    Args:
+        theta: batch_n
+
+    Returns:
+        A tensor of the shape batch_n x 2 x 2.
+    """
+    assert theta.dim() == 1
+
+    c, s = torch.cos(theta).reshape(-1, 1, 1), torch.sin(theta).reshape(-1, 1, 1)
+    r1 = torch.cat((c, -s), dim=2)
+    r2 = torch.cat((s, c), dim=2)
     rots = torch.cat((r1, r2), dim=1)
 
     return rots
 
-def transform_vertices_2d(x, vertices):
-    # Transforms vertices by state x, y, rot
-    # x is batched
-    k = vertices.shape[1]
-    batch_n = x.shape[0]
 
-    vertices = vertices.unsqueeze(0).repeat(batch_n, 1, 1)
+################################################################################
+#                              2D Transformations                              #
+################################################################################
 
-    if x.shape[1] >= 3:
-        # Check if has rot field
-        rot = rot2d(x[:, 2])
-        vertices = torch.bmm(rot, vertices)
 
-    trans = x[:, 0:2, :].repeat(1, 1, k)
-    vertices = vertices + trans
-    return vertices
+def transform_vertices_2d(configuration: Tensor, vertices: Tensor) -> Tensor:
+    """Transform vertices by the state in configuration.
 
-def transform_vertices_3d(x, vertices):
-    # Transforms vertices by state x, y, z, rot quaternion
-    # state is batched
-    # vertices are batch_n x 3 x k matrix
+    Args:
+        configuration: batch_n x 3 x 1. Second dimension represents x, y, theta.
+        Last dimension just makes each batch entry a column vector.
 
-    k = vertices.shape[2]
-    batch_n = x.shape[0]
-    vert_quat = torch.cat((torch.zeros(batch_n, k, 1), vertices.transpose(1,2)), dim=2)
-    rot_quat = x[:, 3:7, :].squeeze(2)
+        vertices: batch_n x vert_n x 2 OR vert_n x 2. If the latter the same vertices are used
+        for every batch entry.
 
-    vert_quat = vert_quat.reshape(k * batch_n, -1)
-    rot_quat = rot_quat.repeat(1, k).reshape(k * batch_n, -1)
+    Returns:
+        A tensor of the shape batch_n x vert_n x 2.
+    """
+    batch_n = configuration.shape[0]
+
+    if vertices.dim() == 2: vertices = vertices.unsqueeze(0).repeat(batch_n, 1, 1)
+    assert vertices.shape[2] == 2
+    vert_n = vertices.shape[1]
+
+    rot = rot2d(configuration[:, 2, 0])
+    trans = configuration[:, 0:2, :].repeat(1, 1, vert_n)
+
+    vertices = torch.bmm(rot, vertices.transpose(1, 2)) + trans
+
+    return vertices.transpose(1, 2)
+
+
+def transform_and_project_2d(configuration: Tensor, vertices: Tensor,
+                             projections: Tensor) -> Tensor:
+    """Transform vertices by the configuration.
+
+    Args:
+        configuration: batch_n x 3 x 1. The second dimension represents x, y, theta.
+        Last dimension just makes each batch entry a column vector.
+
+        vertices: vert_n x 2.
+
+        projections: proj_n x 2. Transformed vertices are projected along these vectors.
+
+    Returns:
+        A tensor of the shape batch_n x (vert_n * proj_n) x 1. Projections are interleaved
+        along the second dimension. Meaning that we first stack proj_n projections for the
+        first vertex, then proj_n projections for the second vertex, etc.
+    """
+    assert vertices.dim() == 2 and vertices.shape[1] == 2
+    assert projections.dim() == 2 and projections.shape[1] == 2
+
+    batch_n = configuration.shape[0]
+
+    projections = projections.unsqueeze(0).repeat(batch_n, 1, 1)
+
+    vertices = transform_vertices_2d(configuration, vertices)
+
+    dists = projections.bmm(vertices.transpose(1, 2)).transpose(1, 2)
+
+    return dists
+
+
+def _compute_corner_jacobians(configuration: Tensor, vertices: Tensor) -> List[Tensor]:
+    """Compute the jacobians of each corner position w.r.t. configuration."""
+    batch_n = configuration.shape[0]
+    corner_angles = -torch.atan2(vertices[:, 0], vertices[:, 1]) + math.pi / 2
+    body_rot = configuration[:, 2:3, :].transpose(1, 2)
+
+    Js = []
+
+    for i, corner_angle in enumerate(corner_angles):
+        corner_angle_rep = corner_angle.repeat(batch_n).reshape(-1, 1, 1)
+        corner_rot = body_rot + corner_angle_rep
+        angle_jacobian = torch.cat((-torch.sin(corner_rot), torch.cos(corner_rot)), dim=1)
+
+        dist = torch.norm(vertices[i, :], 2)
+        angle_jacobian = (angle_jacobian * dist).transpose(1, 2)
+
+        Id = torch.eye(2).unsqueeze(0).repeat(batch_n, 1, 1)
+        J = torch.cat((Id, angle_jacobian), dim=1)
+        Js.append(J)
+
+    return Js
+
+
+def transform_and_project_2d_jacobian(configuration: Tensor, vertices: Tensor,
+                                      projections: Tensor) -> Tensor:
+    """Compute the Jacobian of the 2d transformation and projection.
+
+    Args:
+        configuration: batch_n x 3 x 1. The second dimension represents x, y, theta.
+        Last dimension just makes each batch entry a column vector.
+
+        vertices: vert_n x 2.
+
+        projections: proj_n x 2. Transformed vertices are projected along these vectors.
+
+    Returns:
+        A tensor of the shape batch_n x (vert_n * proj_n) x 3. Projections are interleaved
+        along the second dimension. Meaning that we first stack proj_n projection gradients
+        for the first vertex, then proj_n project gradients for the second vertex, etc.
+    """
+    assert vertices.dim() == 2 and vertices.shape[1] == 2
+    assert projections.dim() == 2 and projections.shape[1] == 2
+
+    batch_n = configuration.shape[0]
+
+    projections = projections.unsqueeze(0).repeat(batch_n, 1, 1)
+
+    Js = _compute_corner_jacobians(configuration, vertices)
+    projected_Js = [projections.bmm(J.transpose(1, 2)).transpose(1, 2) for J in Js]
+
+    return torch.cat(tuple(projected_Js), dim=2).transpose(1, 2)
+
+
+################################################################################
+#                              3D Transformations                              #
+################################################################################
+
+
+def transform_vertices_3d(configuration: Tensor, vertices: Tensor) -> Tensor:
+    """Transform vertices by the configuration.
+
+    Args:
+        configuration: batch_n x 7 x 1. The second dimension represents x, y, z, quaternion.
+        Last dimension just makes each batch entry a column vector.
+
+        vertices: batch_n x vert_n x 3 OR vert_n x 3. If the latter the same vertices are used
+        for every batch entry.
+
+    Returns:
+        A tensor of the shape batch_n x vert_n x 3.
+    """
+    batch_n = configuration.shape[0]
+
+    if vertices.dim() == 2: vertices = vertices.unsqueeze(0).repeat(batch_n, 1, 1)
+    assert vertices.shape[2] == 3
+    vertices = vertices.transpose(1, 2)
+    vert_n = vertices.shape[2]
+
+    vert_quat = torch.cat((torch.zeros(batch_n, vert_n, 1), vertices.transpose(1, 2)), dim=2)
+    rot_quat = configuration[:, 3:7, :].squeeze(2)
+
+    vert_quat = vert_quat.reshape(vert_n * batch_n, -1)
+    rot_quat = rot_quat.repeat(1, vert_n).reshape(vert_n * batch_n, -1)
 
     vert_rot = quat.qmul(quat.qmul(rot_quat, vert_quat), quat.qinv(rot_quat))
 
-    vert_rot = vert_rot.reshape(batch_n, k, 4)
+    vert_rot = vert_rot.reshape(batch_n, vert_n, 4)
 
     vert_rot = vert_rot[:, :, 1:4]
 
-    pos_shift = x[:, 0:3, :].transpose(1,2)
+    pos_shift = configuration[:, 0:3, :].transpose(1, 2)
 
     return vert_rot + pos_shift
 
-def transform_and_project_3d(x, vertices, ed):
-    batch_n = x.shape[0]
-    if vertices.dim() == 2:
-        vertices = vertices.unsqueeze(0).repeat(batch_n, 1, 1)
 
-    vert_transformed = transform_vertices_3d(x, vertices)
+def transform_and_project_3d(configuration: Tensor, vertices: Tensor,
+                             projections: Tensor) -> Tensor:
+    """Transform vertices by the configuration, then project along projections.
 
-    dists = vert_transformed.bmm(ed.transpose(1,2).repeat(batch_n,1,1))
+    Args:
+        configuration: batch_n x 7 x 1. The second dimension represents x, y, z, quaternion.
+        Last dimension just makes each batch entry a column vector.
 
-    if ed.nelement() > 3:
-        k = vertices.shape[2]
-        dists = dists.reshape(batch_n, ed.shape[1] * k, 1)
+        vertices: vert_n x 3.
 
-    return dists.transpose(1,2)
+        projections: proj_n x 3. Transformed vertices are projected along these vectors.
 
-def transform_and_project_3d_jacobian(x, vertices, ed, vertex_jac=False):
-    # Jacobian of transformed and projected vertices w.r.t. x
-    # If vertex_jac is true, it also stacks the jacobian w.r.t. vertices
-    batch_n = x.shape[0]
-    k = vertices.shape[1]
-    qrot = x[:, 3:7, :].squeeze(2)
-    qverts = torch.cat((torch.zeros(k, 1), vertices.t()), dim=1)
+    Returns:
+        A tensor of the shape batch_n x (vert_n * proj_n) x 1. Projections are interleaved
+        along the second dimension. Meaning that we first stack proj_n projections for the
+        first vertex, then proj_n projections for the second vertex, etc.
+    """
+    assert vertices.dim() == 2 and vertices.shape[1] == 3
+    assert projections.dim() == 2 and projections.shape[1] == 3
 
-    extract_n = ed.shape[1]
-    qrot = qrot.repeat(1, k).reshape(k * batch_n, -1)
+    batch_n, vert_n, proj_n = configuration.shape[0], vertices.shape[0], projections.shape[0]
+
+    projections = projections.unsqueeze(0).repeat(batch_n, 1, 1)
+
+    vertices = transform_vertices_3d(configuration, vertices)
+
+    dists = vertices.bmm(projections.transpose(1, 2))
+
+    # Interleave the projections; should do nothing if proj_n = 1
+    dists = dists.reshape(batch_n, proj_n * vert_n, 1)
+
+    return dists
+
+
+def transform_and_project_3d_jacobian(configuration: Tensor, vertices: Tensor,
+                                      projections: Tensor, vertex_jac=False) -> Tensor:
+    """Compute the Jacobian of the 3d transformation and projection w.r.t configuration.
+
+    Args:
+        configuration: batch_n x 7 x 1. The second dimension represents x, y, z, quaternion.
+        Last dimension just makes each batch entry a column vector.
+
+        vertices: vert_n x 3.
+
+        projections: proj_n x 3. Transformed vertices are projected along these vectors.
+
+        vertex_jac: indicates whether or not the Jacobian w.r.t. vertices should be added.
+
+    Returns:
+        For vertex_jac = False:
+        A tensor of the shape batch_n x (vert_n * proj_n) x 7. Projections are interleaved
+        along the second dimension. Meaning that we first stack proj_n projection gradients
+        for the first vertex, then proj_n project gradients for the second vertex, etc.
+
+        For vertex_jac = True:
+        A tensor of the shape batch_n x (vert_n * proj_n) x (7 + 3 * vert_n). The original
+        matrix is augmented with the jacobian of each projection w.r.t. vertex coordinates
+        before transformation.
+    """
+    assert vertices.dim() == 2 and vertices.shape[1] == 3
+    assert projections.dim() == 2 and projections.shape[1] == 3
+
+    batch_n, vert_n, proj_n = configuration.shape[0], vertices.shape[0], projections.shape[0]
+
+    projections = projections.unsqueeze(0).repeat(vert_n * batch_n, 1, 1)
+
+    qrot = configuration[:, 3:7, 0]
+    qverts = torch.cat((torch.zeros(vert_n, 1), vertices), dim=1)
+
+    qrot = qrot.repeat(1, vert_n).reshape(vert_n * batch_n, -1)
 
     qverts = qverts.repeat(batch_n, 1)
 
 
     qjac = quat.qjac(qrot, qverts)
     qjac = qjac.reshape(-1, qjac.shape[1], qjac.shape[2])
-    ed = ed.repeat(k * batch_n, 1, 1)
 
-    rot_jac_dist = ed.bmm(qjac.transpose(1,2)).reshape(batch_n, k * extract_n, -1)
-    pos_jac_dist = ed.reshape(batch_n, k * extract_n, -1)
+    rot_jac_dist = projections.bmm(qjac.transpose(1, 2)).reshape(batch_n, vert_n * proj_n, -1)
+    pos_jac_dist = projections.reshape(batch_n, vert_n * proj_n, -1)
 
     jac = torch.cat((pos_jac_dist, rot_jac_dist), dim=2)
 
     if vertex_jac:
-        vertjac = quat.quaternion_to_rotmat(qverts)
-        # ONLY WORKS FOR BATCH_N = 1
-        #vertjac_dist = ed.bmm(vertjac.transpose(1,2)).reshape(k * extract_n, -1, 1)
-        vertjac_dist = ed.bmm(vertjac.transpose(1,2)).transpose(1,2)
+        vertjac = quat.quaternion_to_rotmat(qrot)
+        vertjac_dist = projections.bmm(vertjac).transpose(1, 2)
 
-        #vertjac_dist = tensor_utils.block_diag(vertjac_dist).reshape(batch_n, k, k * 3)
-        vertjac_dist = tensor_utils.block_diag(vertjac_dist).t().unsqueeze(0).repeat(batch_n, 1, 1)
+        vertjac_dist = tensor_utils.block_diag(vertjac_dist) \
+            .t().unsqueeze(0).repeat(batch_n, 1, 1)
         jac = torch.cat((jac, vertjac_dist), dim=2)
 
     return jac
-
-def vertices_to_pR_weights(vertices):
-    # z components first
-    k = vertices.shape[1]
-    Jx_weights = torch.cat((torch.ones(k,1),torch.zeros(k,2),vertices.t(),torch.zeros(k,6)), dim=1)
-    Jy_weights = torch.cat((torch.zeros(k,1),torch.ones(k,1),torch.zeros(k,1 + 3),vertices.t(),torch.zeros(k,3)), dim=1)
-    Jz_weights = torch.cat((torch.zeros(k,2),torch.ones(k,1),torch.zeros(k,6),vertices.t()), dim=1)
-
-    Jt_weights = torch.cat((Jx_weights,Jy_weights),dim=1).reshape(2 * k, 12)
-    return (Jz_weights, Jt_weights)
-
