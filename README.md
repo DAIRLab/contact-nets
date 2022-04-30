@@ -1,3 +1,6 @@
+# Deprecation Notice
+The second generation of ContactNets' software is being developed as part of the DAIR Lab's [Physics-based Learning Library](https://github.com/DAIRLab/dair_pll).
+
 # ContactNets
 This repository contains source code for the paper [ContactNets: Learning Discontinuous Contact Dynamics with Smooth, Implicit Representations](https://arxiv.org/abs/2009.11193) by [Samuel Pfrommer\*](http://sam.pfrommer.us/), [Mathew Halm\*](https://www.grasp.upenn.edu/people/mathew-halm), and [Michael Posa](https://www.grasp.upenn.edu/people/michael-posa), published in [CoRL 2020](https://www.robot-learning.org/program/accepted-papers).
 
